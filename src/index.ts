@@ -3,6 +3,7 @@ import prisma from "./lib/prisma";
 import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken";
 import { authMiddleware } from "./middleware/auth";
+import { getStatus } from "./utils/status";
 
 const app = express();
 app.use(express.json());
@@ -81,7 +82,38 @@ app.post("/api/auth/login",  async (req, res)=>{
 
 })
 
+app.post("/api/launches", authMiddleware, async (req, res)=>{
+  const {name, symbol, totalSupply, pricePerToken, startsAt, endsAt, maxPerWallet, description, tiers, vesting} = req.body;
+  if(!name || !symbol || !totalSupply || !pricePerToken || !startsAt || !endsAt || !maxPerWallet){
+    return res.status(400).json({error:"One or more values Missing"});
+  }
+  const launch = await prisma.launch.create({
+    data:{
+      name,
+      symbol,
+      creatorId:(req as any).userId,
+      totalSupply,
+      pricePerToken,
+      startsAt: new Date(startsAt),
+      endsAt: new Date(endsAt),
+      maxPerWallet,
+      description,
+      tiers: tiers ? {create:tiers}:undefined,
+      vesting: vesting ? {create:vesting}:undefined
+    },
+    include: {tiers:true, vesting:true}
+  });
+  return res.status(201).json({
+    launch,
+    status:getStatus(launch, 0)
+  });
+})
 
+app.get("/api/launches", (req, res)=>{
+  const page = parseInt((req.query.page as string) || "1");
+  const limit = parseInt((req.query.limit as string) || "1");
+  const status = req.query.status;
+})
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");
