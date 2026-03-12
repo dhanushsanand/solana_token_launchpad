@@ -20,9 +20,9 @@ app.use(express.json());
 // TODO: DELETE /api/launches/:id/whitelist/:address --done
 // TODO: POST /api/launches/:id/referrals --done
 // TODO: GET /api/launches/:id/referrals --done
-// TODO: POST /api/launches/:id/purchase (with referralCode?, tier pricing, sybil protection)
-// TODO: GET /api/launches/:id/purchases
-// TODO: GET /api/launches/:id/vesting?walletAddress=
+// TODO: POST /api/launches/:id/purchase (with referralCode?, tier pricing, sybil protection) --done
+// TODO: GET /api/launches/:id/purchases --done
+// TODO: GET /api/launches/:id/vesting?walletAddress= 
 
 app.get("/api/health", (req, res)=>{
   return res.status(200).json({status:"ok"});
@@ -368,7 +368,63 @@ app.get("/api/launches/:id/purchases", authMiddleware, async (req, res)=>{
   //   launchId,
   //   purchase: purchases.filter((purchase)=> (purchase.userId === userId))
   // });
-})
+});
+
+app.get("/api/launches/:id/vesting?walletAddress=ADDR", async (req, res)=>{
+  const walletAddress = req.query.walletAddress;
+  if(!walletAddress) return res.status(400).json({error:"Wallet Address is not Present"});
+  const launchId = parseInt(req.params.id);
+  const launch = await prisma.launch.findUnique({
+    where:{id:launchId},
+    include:{vesting:true, purchases:true}
+  });
+  if(!launch) return res.status(404).json({error:"Launch Not found"});
+  const walletPurchases = launch.purchases.filter((purchase)=> (purchase.walletAddress === walletAddress));
+  const totalPurchased = walletPurchases.reduce((sum:number, p:any)=> (sum + p.amount),0);
+  if(!launch.vesting){
+    return res.status(200).json({
+      totalPurchased:totalPurchased,
+      tgeAmount:totalPurchased,
+      cliffEndsAt:null,
+      vestedAmount:totalPurchased,
+      lockedAmount:0,
+      claimableAmount:totalPurchased
+    });
+  }
+  else{
+    const cliffDays = launch.vesting.cliffDays;
+    const vestingDays = launch.vesting.vestingDays;
+    const tgePercent = launch.vesting.tgePercent;
+
+    const tgeAmount = Math.floor((totalPurchased * tgePercent)/100);
+    const startsAt = launch.startsAt;
+    const cliffEndsAt = startsAt.getTime() + (cliffDays * 24 * 60 * 60 * 1000);
+    const vestingEndsAt = cliffEndsAt + vestingDays * 24 * 60 * 60 * 1000;
+    const now = new Date().getTime();
+    let vestedAmount = 0;
+    if(now < cliffEndsAt){
+      vestedAmount = tgeAmount;
+    }
+    else if(now >= vestingEndsAt){
+      vestedAmount = totalPurchased;
+    }
+    else if((cliffEndsAt <= now) &&( now < vestingEndsAt)){
+      const linearVested = ((totalPurchased - tgeAmount)/vestingDays) * ((now - cliffEndsAt)/(24*60*60*1000));
+      vestedAmount = tgeAmount + linearVested;
+    }
+    vestedAmount = Math.floor(vestedAmount);
+    const lockedAmount = totalPurchased - vestedAmount;
+    const claimableAmount = vestedAmount;
+    return res.status(200).json({
+      totalPurchased:totalPurchased,
+      tgeAmount:tgeAmount,
+      cliffEndsAt:new Date(cliffEndsAt).toISOString(),
+      vestedAmount:vestedAmount,
+      lockedAmount:lockedAmount,
+      claimableAmount:claimableAmount
+    });
+  }
+});
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");
