@@ -1,4 +1,4 @@
-import express from "express";
+import express, { response } from "express";
 import prisma from "./lib/prisma";
 import bcrypt from "bcryptjs"
 import jwt from "jsonwebtoken";
@@ -15,9 +15,9 @@ app.use(express.json());
 // TODO: GET /api/launches (?page, ?limit, ?status) -- done
 // TODO: GET /api/launches/:id (with computed status) -- done
 // TODO: PUT /api/launches/:id -- done
-// TODO: POST /api/launches/:id/whitelist
-// TODO: GET /api/launches/:id/whitelist
-// TODO: DELETE /api/launches/:id/whitelist/:address
+// TODO: POST /api/launches/:id/whitelist --done
+// TODO: GET /api/launches/:id/whitelist -- done
+// TODO: DELETE /api/launches/:id/whitelist/:address 
 // TODO: POST /api/launches/:id/referrals
 // TODO: GET /api/launches/:id/referrals
 // TODO: POST /api/launches/:id/purchase (with referralCode?, tier pricing, sybil protection)
@@ -26,11 +26,11 @@ app.use(express.json());
 
 app.get("/api/health", (req, res)=>{
   return res.status(200).json({status:"ok"});
-})
+});
 
 async function existingUser(email:string) {
   return await prisma.user.findUnique({where:{email}});
-}
+};
 
 app.post("/api/auth/register", async (req, res)=>{
   const {name, email, password} = req.body;
@@ -54,7 +54,7 @@ app.post("/api/auth/register", async (req, res)=>{
     token,
     user:{id:user.id,email:user.email, name:user.name}
   });
-})
+});
 
 app.post("/api/auth/login",  async (req, res)=>{
   const {email, password} = req.body;
@@ -80,7 +80,7 @@ app.post("/api/auth/login",  async (req, res)=>{
     }
   });
 
-})
+});
 
 app.post("/api/launches", authMiddleware, async (req, res)=>{
   const {name, symbol, totalSupply, pricePerToken, startsAt, endsAt, maxPerWallet, description, tiers, vesting} = req.body;
@@ -107,7 +107,7 @@ app.post("/api/launches", authMiddleware, async (req, res)=>{
     launch,
     status:getStatus(launch, 0)
   });
-})
+});
 
 app.get("/api/launches", async (req, res)=>{
   const page = parseInt((req.query.page as string) || "1");
@@ -130,7 +130,7 @@ app.get("/api/launches", async (req, res)=>{
     page,
     limit
   });
-})
+});
 
 app.get("/api/launches/:id", async (req, res)=>{
   const launchId = parseInt(req.params.id);
@@ -147,7 +147,7 @@ app.get("/api/launches/:id", async (req, res)=>{
   return res.status(200).json({
     ...launch, status:getStatus(launch, totalPurchased)
   });
-})
+});
 
 app.put("/api/launches/:id", authMiddleware, async (req, res) => {
   const launchId = parseInt(req.params.id);
@@ -169,9 +169,64 @@ app.put("/api/launches/:id", authMiddleware, async (req, res) => {
   } catch (error) {
     return res.status(500).json({error:"Unexpected error"});
   }
-})
+});
 
-app.post
+app.post("/api/launches/:id/whitelist", authMiddleware, async (req, res) => {
+  const userId = (req as any).userId;
+  const launchId = parseInt(req.params.id);
+  const addresses = req.body.addresses;
+
+  const launch = await prisma.launch.findUnique({
+    where:{id:launchId}
+  });
+  if(!launch) return res.status(404).json({error:"Launch Not found"});
+  if(launch.creatorId !== userId) return res.status(403).json({error:"Only Launch creator can add Whitelist entries"});
+  const added = await prisma.whitelistEntry.createMany({
+    data:addresses.map((addr:string)=>({launchId, address:addr})),
+    skipDuplicates:true
+  })
+  const whiteListedAddressCount = await prisma.whitelistEntry.count({where:{launchId}});
+  return res.status(200).json({
+    added:added.count,
+    total:whiteListedAddressCount
+  });
+});
+
+app.get("/api/launches/:id/whitelist", authMiddleware, async (req, res)=>{
+  const launchId = parseInt(req.params.id);
+  const userId = (req as any).userId;
+  const launch = await prisma.launch.findUnique({where:{id:launchId}});
+  const entries = await prisma.whitelistEntry.findMany({
+    where:{launchId},
+  });
+  if(!launch) return res.status(404).json({error:"Launch not found"});
+  if(launch.creatorId !== userId) return res.status(403).json({error:"Unauthorized Access"});
+  const addresses = entries.map((entry:any) => (entry.address));
+  return res.status(200).json({
+    addresses,
+    total:addresses.length
+  });
+});
+
+app.delete("/api/launches/:id/whitelist/:address", authMiddleware, async (req, res)=>{
+  const userId = (req as any).userId;
+  const launchId = parseInt(req.params.id);
+  const address = req.params.address;
+
+  const launch = await prisma.launch.findUnique({where:{id:launchId}});
+  if(!launch) return res.status(404).json({error:`Launch Not found for Id ${launchId}`});
+  if(launch.creatorId !== userId) return res.status(403).json({error:"Unauthorized Access"});
+  const entry = await prisma.whitelistEntry.findUnique({
+    where:{launchId_address:{launchId, address}}
+  });
+  if(!entry) return res.status(404).json({error:"Whitelist entry not found"});
+  await prisma.whitelistEntry.delete({
+    where:{launchId_address:{launchId, address}}
+  });
+  return res.status(200).json({removed:true});
+});
+
+
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");
