@@ -267,6 +267,109 @@ app.get("/api/launches/:id/referrals", authMiddleware, async (req, res)=>{
   });
 });
 
+app.post("/api/launches/:id/purchase", authMiddleware, async (req, res)=>{
+  const launchId = parseInt(req.params.id);
+  const {walletAddress, amount, txSignature, referralCode} = req.body;
+  const userId = (req as any).userId;
+
+  const launch = await prisma.launch.findUnique({
+    where:{id:launchId},
+    include:{tiers:true, vesting:true, purchases:true, whitelist:true}
+  });
+  if(!launch) return res.status(404).json({error:"Launch Not found"});
+  const totalPurchased = launch.purchases.reduce((sum:number, p:any)=> (sum + p.amount),0);
+  const status = getStatus(launch, totalPurchased);
+  if(status !== "ACTIVE") return res.status(400).json({error:"Launch is not Active"});
+  if(launch.whitelist.length != 0 && !launch.whitelist.find((w:any)=> w.address === walletAddress)) return res.status(400).json({error:"Wallet address not whitelisted"});
+  const transaction = await prisma.purchase.findUnique({where:{txSignature}});
+  if(transaction) return res.status(400).json({error:"Purchase Transaction already exists"});
+  const purchases = await prisma.purchase.findMany({where:{userId, launchId}});
+  const existingAmount = purchases.reduce((sum:number, p:any)=> sum+p.amount, 0);
+  if(existingAmount + amount > launch.maxPerWallet) return res.status(400).json({error:"Purchase will go beyond max allowed per wallet"});
+  if(totalPurchased + amount > launch.totalSupply) return res.status(400).json({error:"Purchase will go beyond total Supply"});
+  const tiers = launch.tiers;
+  let remaining = amount;
+  let totalCost = 0;
+  if(tiers.length > 0){
+    tiers.sort((a: any, b: any) => a.minAmount - b.minAmount);
+  
+    for(const tier of tiers){
+      const tierCapacity = tier.maxAmount - tier.minAmount;
+      const tokenThisTier = Math.min(tierCapacity, remaining);
+      totalCost += tokenThisTier * tier.pricePerToken;
+      remaining -= tokenThisTier;
+      if(remaining <= 0) break;
+    }
+    if(remaining > 0){
+      totalCost += remaining * launch.pricePerToken;
+    }
+  }
+  else{
+    totalCost = amount * launch.pricePerToken;
+  }
+  if(referralCode){
+    const referral = await prisma.referralCode.findUnique({where:{launchId_code:{launchId, code:referralCode}}});
+  if(!referral) return res.status(400).json({error:"Referral Code invalid"});
+  if(referral.usedCount >= referral.maxUses) return res.status(400).json({error:"Referral Code max usage reached"});
+  totalCost = (totalCost) * (1 - referral.discountPercent/100);
+  await prisma.referralCode.update({
+    where:{id:referral.id},
+    data:{
+      usedCount:{increment:1}
+    }
+  });
+  }
+  const purchase = await prisma.purchase.create({
+    data:{
+      walletAddress,
+      amount,
+      totalCost,
+      txSignature,
+      launchId,
+      userId
+    }
+  });
+
+  return res.status(201).json({
+    walletAddress:purchase.walletAddress,
+    amount:purchase.amount,
+    totalCost:purchase.totalCost,
+    time:purchase.createdAt,
+    transactionSignature:purchase.txSignature,
+    launchId,
+    userId
+  });
+
+});
+
+app.get("/api/launches/:id/purchases", authMiddleware, async (req, res)=>{
+  const userId = (req as any).userId;
+  const launchId = parseInt(req.params.id);
+  const launch = await prisma.launch.findUnique({where:{id:launchId}});
+  if(!launch) return res.status(404).json({error:"Launch Not found"});
+  const purchases = await prisma.purchase.findMany({where:{launchId}});
+  const filteredPurchases = (launch.creatorId === userId)? purchases : purchases.filter((purchase)=>(purchase.userId === userId));
+  return res.status(200).json({
+    total:filteredPurchases.length,
+    purchases:filteredPurchases
+  });
+  // if(launch.creatorId === userId){
+  //   if(purchases.length > 0){
+  //     return res.status(200).json({
+  //       userId,
+  //       launchId,
+  //       purchases:purchases
+  //     });
+  //   }
+  //   return res.status(404).json({error:`Purchases not found for launchId: ${launchId}`});
+  // }
+  // return res.status(200).json({
+  //   userId,
+  //   launchId,
+  //   purchase: purchases.filter((purchase)=> (purchase.userId === userId))
+  // });
+})
+
 app.listen(3000, () => {
   console.log("Server running on port 3000");
 });
