@@ -17,9 +17,9 @@ app.use(express.json());
 // TODO: PUT /api/launches/:id -- done
 // TODO: POST /api/launches/:id/whitelist --done
 // TODO: GET /api/launches/:id/whitelist -- done
-// TODO: DELETE /api/launches/:id/whitelist/:address 
-// TODO: POST /api/launches/:id/referrals
-// TODO: GET /api/launches/:id/referrals
+// TODO: DELETE /api/launches/:id/whitelist/:address --done
+// TODO: POST /api/launches/:id/referrals --done
+// TODO: GET /api/launches/:id/referrals --done
 // TODO: POST /api/launches/:id/purchase (with referralCode?, tier pricing, sybil protection)
 // TODO: GET /api/launches/:id/purchases
 // TODO: GET /api/launches/:id/vesting?walletAddress=
@@ -226,7 +226,46 @@ app.delete("/api/launches/:id/whitelist/:address", authMiddleware, async (req, r
   return res.status(200).json({removed:true});
 });
 
+app.post("/api/launches/:id/referrals", authMiddleware, async (req, res)=>{
+  const userId = (req as any).userId;
+  const {code, discountPercent, maxUses} = req.body;
+  const launchId = parseInt(req.params.id);
+  const launch = await prisma.launch.findUnique({where:{id:launchId}});
+  if(!launch) return res.status(404).json({error:`Launch Not found for Id ${launchId}`});
+  if(launch.creatorId !== userId) return res.status(403).json({error:"Unauthorized Access"});
+  try {
+    const referral = await prisma.referralCode.create({
+      data:{
+        code,
+        discountPercent,
+        maxUses,
+        usedCount:0,
+        launchId
+      }
+    });
+    return res.status(201).json({
+      id:referral.id,
+      code:referral.code,
+      discountPercent:referral.discountPercent,
+      maxUses:referral.maxUses,
+      usedCount:referral.usedCount
+    });
+  } catch (error) {
+    return res.status(409).json({error:"Code already exists"});
+  }
+  
+});
 
+app.get("/api/launches/:id/referrals", authMiddleware, async (req, res)=>{
+  const userId = (req as any).userId;
+  const launchId = parseInt(req.params.id);
+  const launch = await prisma.launch.findUnique({where:{id:launchId},include:{referralCode:true}});
+  if(!launch) return res.status(404).json({error:"Launch Not found"});
+  if(launch.creatorId !== userId) return res.status(403).json({error:"Unauthorized Access"});
+  return res.status(200).json({
+    referralCodes:launch.referralCode
+  });
+});
 
 app.listen(3000, () => {
   console.log("Server running on port 3000");
